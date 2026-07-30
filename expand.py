@@ -86,6 +86,7 @@ class Writer:
         self.logger = logger
         self.expanded = 0
         self.skipped = 0
+        self.records = 0
 
     def create_file(self, path, size):
         with open(path, "wb") as file:
@@ -103,8 +104,16 @@ class Writer:
                 raise AppError(f"Unknown mode {self.mode!r}")
 
     def expand(self, record):
-        self.logger.debug(f"{record=}")
+        self.logger.debug(f"Got {record=}")
+
         kind, size, path, link = record
+
+        self.records += 1
+        if self.records & ((1 << 10) - 1) == 0:
+            self.logger.info(
+                f"Progress: records={self.records} expanded={self.expanded} skipped={self.skipped} path={path[:30]}..."
+            )
+
         if kind == "d":
             try:
                 os.mkdir(path)
@@ -120,13 +129,14 @@ class Writer:
         else:
             self.skipped += 1
             raise UnknownKind(f"Unknown record kind for {record!r}")
-        logging.info(f"Created {kind} {path}")
+        self.logger.debug(f"Created {kind=} {path=}")
         self.expanded += 1
 
     def report(self):
         return {
             "expanded": self.expanded,
             "skipped": self.skipped,
+            "records": self.records,
         }
 
 
@@ -153,7 +163,7 @@ def run(directory, mode, *, chunk_size, logger):
         try:
             writer.expand(record)
         except UnknownKind as exc:
-            logging.warning(exc)
+            logger.warning(exc)
 
     print(json.dumps(writer.report()))
 
@@ -195,8 +205,11 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     except OSError as exc:
-        logging.error(f"Error: {exc}")
+        logger.error(f"Error: {exc}")
         sys.exit(2)
+    except AppError as exc:
+        logger.critical(f"Critical: {exc}")
+        sys.exit(3)
 
 
 if __name__ == "__main__":
