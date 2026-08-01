@@ -5,10 +5,7 @@ import stat
 import sys
 
 from argparse import ArgumentParser
-from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
-from queue import Empty, Queue
-from threading import Event
 from typing import List, Optional, Tuple
 
 PROGRESS_POW2 = 13
@@ -53,35 +50,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         choices=["debug", "info", "warning", "error", "critical"],
         default="warning",
     )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        # disk access is so fast (on an SSD) that multithreading does not help
-        # do only tune this if it actually helps you (multiple drives, and such)
-        # v1.0.0
-        #     0m2,259s (single-thread)
-        # v1.1.0
-        #     0m2,775s (1 worker) --> already 22% slower than single-threaded
-        #     0m3,457s (2 workers)
-        #     0m3,940s (3 workers)
-        #     0m4,387s (4 workers)
-        #     0m4,609s (8 workers)
-        #     0m4,983s (16 workers)
-        #     0m5,221s (32 workers)
-        default=1,
-    )
-    parser.add_argument("directory")
+    parser.add_argument("directory", nargs="*", default=["."])
     args = parser.parse_args()
 
     logger = get_logger(args.log_level)
 
+    captures = 0
+    missing = 0
     try:
-        run(
-            args.directory,
-            workers=args.workers,
-            logger=logger,
-            log_missing=args.log_missing,
-        )
+        # single threade iterative processing, because
+        # - multiple seek on HDD make things worse
+        # - multiple seek on SSD are basically free
+        # - but most important, once it is cached it's too fast
+        # so keep simple and avoid unnecessary complexity
+        for directory in args.directory:
+            dir_captures, dir_missing = run(
+                directory,
+                logger=logger,
+                log_missing=args.log_missing,
+            )
+            captures += dir_captures
+            missing += dir_missing
     except KeyboardInterrupt:
         pass
     except OSError as exc:
@@ -95,159 +84,64 @@ def main(argv: Optional[List[str]] = None) -> None:
 def run(
     directory: str,
     *,
-    workers: int,
     log_missing: bool,
     logger: Logger,
-) -> None:
+) -> Tuple[int, int]:
     captures = 0
     missing = 0
 
     # move to base directory once, all sub path are relative to this path
+    logger.info(f"Processing directory={directory}")
     os.chdir(directory)
 
-    # iterative processing of a recursive filesystem
-    directory_queue = Queue()
-    directory_queue.put(".")
+    directories = [directory]
+    while len(directories) > 0:
+        directory = directories.pop()
 
-    # sentinel flag to signal the workers to exit
-    exit_event = Event()
+        # process the given item (read directory)
+        for entry in os.scandir(directory):
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        # create many workers, all polling directories from the queue
-        futures = [
-            executor.submit(
-                directory_worker,
-                directory_queue,
-                worker_id=worker_id,
-                exit_event=exit_event,
-                log_missing=log_missing,
-                logger=logger,
-            )
-            for worker_id in range(workers)
-        ]
+            # iterative processing of a recursive filesystem
+            if entry.is_dir(follow_symlinks=False):
+                directories.append(entry.path)
+                logger.debug(f"Queuing directory: entry={entry.path}")
+                # IMPORTANT: do NOT use `continue` as we want the direcotry itself be displayed !
 
-        # wait for the queue to become empty, signaling work is totally finished
-        try:
-            directory_queue.join()
-        except KeyboardInterrupt:
-            logger.info("User requested exit")
-        finally:
-            # signal the workers they can stop processing
-            exit_event.set()
+            # provide progress feedback every 2**N records
+            captures += 1
+            if captures & ((1 << PROGRESS_POW2) - 1) == 0:
+                logger.info(
+                    f"Progress: captures={captures} missing={missing} entry={entry.path}"
+                )
 
-        # poll the worker futures until they exit
-        for future in futures:
-            # if a worker thread raised an exception, calling
-            # result() will re-raise it in the main thread
-            (worker_captures, worker_missing) = future.result()
-            # sum up stats
-            captures += worker_captures
-            missing += worker_missing
-
-    logger.info(f"Finished: captures={captures} missing={missing}")
-
-
-def directory_worker(
-    directory_queue: Queue,
-    *,
-    exit_event: Event,
-    log_missing: bool,
-    logger: Logger,
-    worker_id: int,
-) -> Tuple[int, int]:
-    logger.info(f"Worker {worker_id} started")
-
-    worker_captures = 0
-    worker_missing = 0
-
-    try:
-        # infinite loop until caller sends sentinel value
-        while True:
-            # comply with exit requests
-            if exit_event.is_set():
-                return (worker_captures, worker_missing)
-
-            # get an item to process, but with timeout, which is useful
-            # in cas the worker is already waiting on queue before the
-            # exit_event is set, otherwise it would never stop waiting
+            # extracts stats and (if applicable) link info
+            link = ""
             try:
-                directory = directory_queue.get(timeout=0.1)
-            except Empty:
+                stats = entry.stat(follow_symlinks=False)
+                if entry.is_symlink():
+                    link = os.readlink(entry.path)
+            except FileNotFoundError:
+                missing += 1
+                if log_missing:
+                    logger.warning(f"Not found: entry={entry.path}")
                 continue
 
-            try:
-                captures, missing = process_directory(
-                    directory,
-                    directory_queue,
-                    worker_id=worker_id,
-                    log_missing=log_missing,
-                    logger=logger,
-                )
-            finally:
-                # notify that the work item has actually been done, because
-                # an empty queue does not mean worker have finished working !
-                directory_queue.task_done()
-
-            worker_captures += captures
-            worker_missing += missing
-
-    finally:
-        logger.info(
-            f"Worker {worker_id} finished: captures={worker_captures} missing={worker_missing}"
-        )
-
-
-def process_directory(
-    directory: str,
-    directory_queue: Queue,
-    *,
-    log_missing: bool,
-    logger: Logger,
-    worker_id: int,
-) -> Tuple[int, int]:
-    captures = 0
-    missing = 0
-
-    # process the given item (read directory)
-    for entry in os.scandir(directory):
-
-        # iterative processing of a recursive filesystem
-        if entry.is_dir(follow_symlinks=False):
-            directory_queue.put(entry.path)
-            logger.debug(f"Queuing directory: entry={entry.path}")
-            # IMPORTANT: do NOT use `continue` as we want the direcotry itself be displayed !
-
-        # provide progress feedback every 2**N records
-        captures += 1
-        if captures & ((1 << PROGRESS_POW2) - 1) == 0:
-            logger.info(
-                f"Worker {worker_id}: captures={captures} missing={missing} entry={entry.path}"
+            # build the record and print it to stdout
+            record = (
+                FILE_TYPES[stat.S_IFMT(stats.st_mode)],
+                stats.st_size,
+                entry.path,
+                link,
+            )
+            logger.debug(f"Found {record!r}")
+            print(
+                "%s\t%d\t%s\0%s\0" % record,
+                end="",
             )
 
-        # extracts stats and (if applicable) link info
-        link = ""
-        try:
-            stats = entry.stat(follow_symlinks=False)
-            if entry.is_symlink():
-                link = os.readlink(entry.path)
-        except FileNotFoundError:
-            missing += 1
-            if log_missing:
-                logger.warning(f"Not found: entry={entry.path}")
-            continue
-
-        # build the record and print it to stdout
-        record = (
-            FILE_TYPES[stat.S_IFMT(stats.st_mode)],
-            stats.st_size,
-            entry.path,
-            link,
-        )
-        logger.debug(f"Found {record!r}")
-        print(
-            "%s\t%d\t%s\0%s\0" % record,
-            end="",
-        )
+    logger.info(
+        f"Finished: captures={captures} missing={missing} directory={directory}"
+    )
 
     return (captures, missing)
 
