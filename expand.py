@@ -109,6 +109,7 @@ class Writer:
         kind, size, path, link = record
 
         self.records += 1
+        # TODO: reuse for flushing stdout ?
         if self.records & ((1 << 10) - 1) == 0:
             self.logger.info(
                 f"Progress: records={self.records} expanded={self.expanded} skipped={self.skipped} path={path[:30]}..."
