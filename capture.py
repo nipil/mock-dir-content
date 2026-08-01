@@ -56,7 +56,19 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--workers",
         type=int,
-        default=os.cpu_count(),
+        # disk access is so fast (on an SSD) that multithreading does not help
+        # do only tune this if it actually helps you (multiple drives, and such)
+        # v1.0.0
+        #     0m2,259s (single-thread)
+        # v1.1.0
+        #     0m2,775s (1 worker) --> already 22% slower than single-threaded
+        #     0m3,457s (2 workers)
+        #     0m3,940s (3 workers)
+        #     0m4,387s (4 workers)
+        #     0m4,609s (8 workers)
+        #     0m4,983s (16 workers)
+        #     0m5,221s (32 workers)
+        default=1,
     )
     parser.add_argument("directory")
     args = parser.parse_args()
