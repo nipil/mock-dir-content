@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 
-import argparse
-import base64
 import enum
 import json
-import logging
 import os
 import sys
 
+from argparse import ArgumentParser
+from base64 import b64encode
+from typing import Any, Dict, Generator, List, Optional, Tuple
+from logging import Logger
+
 UTF_8 = "utf-8"
+
+
+PROGRESS_POW2 = 13
 
 
 class UnknownKind(Exception):
@@ -30,13 +35,24 @@ class Mode(enum.IntEnum):
     JSON = 4
 
 
+def get_logger(log_level: str) -> Logger:
+    # local scoping to avoid using the global module functions elsewhere
+    import logging
+
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format="%(levelname)s: %(message)s",
+    )
+    return logging.getLogger(__name__)
+
+
 class Reader:
-    def __init__(self, *, chunk_size, logger):
+    def __init__(self, *, chunk_size: int, logger: Logger):
         self.buf = bytearray()
         self.read_size = chunk_size
         self.logger = logger
 
-    def records(self):
+    def records(self) -> Generator[Any, Any, Any]:
         while True:
             # build input buffer from chunks of stdin
             chunk = sys.stdin.buffer.read(self.read_size)
@@ -81,7 +97,7 @@ class Reader:
 
 
 class Writer:
-    def __init__(self, mode, *, chunk_size, logger):
+    def __init__(self, mode: Mode, *, chunk_size: int, logger: Logger):
         self.mode = mode
         self.chunk_size = chunk_size
         self.logger = logger
@@ -89,7 +105,7 @@ class Writer:
         self.skipped = 0
         self.records = 0
 
-    def create_file(self, path, size):
+    def create_file(self, path: str, size: int) -> None:
         with open(path, "wb") as file:
             if self.mode == Mode.EMPTY:
                 pass  # do nothing
@@ -104,21 +120,21 @@ class Writer:
             else:
                 raise AppError(f"Unknown mode {self.mode!r}")
 
-    def expand(self, record):
-        self.logger.debug(f"Got {record=}")
+    def expand(self, record: Tuple[str, int, str, bytearray]) -> None:
+        self.logger.debug(f"Got record={record}")
 
         kind, size, path, link = record
 
         self.records += 1
         # TODO: reuse for flushing stdout ?
-        if self.records & ((1 << 10) - 1) == 0:
+        if self.records & ((1 << PROGRESS_POW2) - 1) == 0:
             self.logger.info(
                 f"Progress: records={self.records} expanded={self.expanded} skipped={self.skipped} path={path[:30]}..."
             )
 
         if self.mode == Mode.JSON:
             if len(link) > 0:
-                link = base64.b64encode(link).decode("ascii")
+                link = b64encode(link).decode("ascii")
             else:
                 link = None
             json.dump(
@@ -148,10 +164,10 @@ class Writer:
         else:
             self.skipped += 1
             raise UnknownKind(f"Unknown record kind for {record!r}")
-        self.logger.debug(f"Created {kind=} {path=}")
+        self.logger.debug(f"Created kind={kind} path={path}")
         self.expanded += 1
 
-    def report(self):
+    def report(self) -> Dict[str, int]:
         return {
             "expanded": self.expanded,
             "skipped": self.skipped,
@@ -159,7 +175,13 @@ class Writer:
         }
 
 
-def run(directory, mode, *, chunk_size, logger):
+def run(
+    directory: str,
+    mode: Mode,
+    *,
+    chunk_size: int,
+    logger: Logger,
+):
     try:
         os.mkdir(directory)
     except FileExistsError:
@@ -190,11 +212,11 @@ def run(directory, mode, *, chunk_size, logger):
     print(json.dumps(writer.report()))
 
 
-def main(argv=None):
+def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
     parser.add_argument("--chunk-size", type=int, default=2**12)
     parser.add_argument(
         "--log-level",
@@ -205,17 +227,12 @@ def main(argv=None):
     parser.add_argument("mode", choices=["empty", "random", "sparse", "json"])
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(levelname)s: %(message)s",
-    )
-
-    logger = logging.getLogger(__name__)
+    logger = get_logger(args.log_level)
 
     try:
         mode = getattr(Mode, args.mode.upper())
     except AttributeError:
-        raise ValueError("Invalid mode: {args.mode!r}")
+        raise ValueError(f"Invalid mode: {args.mode!r}")
 
     try:
         run(
