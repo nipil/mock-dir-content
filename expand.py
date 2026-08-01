@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import enum
 import json
 import logging
 import os
-import random
 import sys
 
 UTF_8 = "utf-8"
@@ -27,6 +27,7 @@ class Mode(enum.IntEnum):
     EMPTY = 1
     RANDOM = 2
     SPARSE = 3
+    JSON = 4
 
 
 class Reader:
@@ -115,6 +116,23 @@ class Writer:
                 f"Progress: records={self.records} expanded={self.expanded} skipped={self.skipped} path={path[:30]}..."
             )
 
+        if self.mode == Mode.JSON:
+            if len(link) > 0:
+                link = base64.b64encode(link).decode("ascii")
+            else:
+                link = None
+            json.dump(
+                {
+                    "kind": kind,
+                    "size": size,
+                    "path": path,
+                    "link_base64": link,
+                },
+                sys.stdout,
+            )
+            sys.stdout.write("\n")
+            return
+
         if kind == "d":
             try:
                 os.mkdir(path)
@@ -159,7 +177,10 @@ def run(directory, mode, *, chunk_size, logger):
         logger=logger,
     )
 
+    # TODO: handle ERROR: Error: [Errno 32] Broken pipe
+
     # cannot use ThreadPoolExecutor for parallelism : parents must exist before children
+    # FIXME: actually, the producer cannot list children if it has not already seen (and emitted) the parent...
     for record in reader.records():
         try:
             writer.expand(record)
@@ -181,7 +202,7 @@ def main(argv=None):
         default="warning",
     )
     parser.add_argument("directory")
-    parser.add_argument("mode", choices=["empty", "random", "sparse"])
+    parser.add_argument("mode", choices=["empty", "random", "sparse", "json"])
     args = parser.parse_args()
 
     logging.basicConfig(
