@@ -99,7 +99,7 @@ def run(
     logger.info(f"Move into capture directory={directory}")
     os.chdir(directory)
 
-    directories = [directory]
+    directories = ["."]
     while len(directories) > 0:
         directory = directories.pop()
 
