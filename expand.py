@@ -127,11 +127,12 @@ class Writer:
         kind, size, path, link = record
 
         self.records += 1
-        # TODO: reuse for flushing stdout ?
         if self.records & ((1 << PROGRESS_POW2) - 1) == 0:
             self.logger.info(
                 f"Progress: records={self.records} expanded={self.expanded} skipped={self.skipped} path={path[:30]}..."
             )
+            # flush input so that consumers do not have to wait for too long to start processing
+            sys.stdout.flush()
 
         if self.mode == Mode.JSON:
             if len(link) > 0:

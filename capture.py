@@ -115,11 +115,12 @@ def run(
 
             # provide progress feedback every 2**N records
             captures += 1
-            # TODO: reuse for flushing stdout ?
             if captures & ((1 << PROGRESS_POW2) - 1) == 0:
                 logger.info(
                     f"Progress: captures={captures} missing={missing} entry={entry.path}"
                 )
+                # flush input so that consumers do not have to wait for too long to start processing
+                sys.stdout.flush()
 
             # extracts stats and (if applicable) link info
             link = ""
