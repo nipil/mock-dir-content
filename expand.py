@@ -106,6 +106,13 @@ class Writer:
         self.records = 0
 
     def create_file(self, path: str, size: int) -> None:
+        if size > 2**40:
+            # useful for /proc/kcore for example
+            self.logger.warning(
+                f"File path={path} size={size} deemed too big, skipping."
+            )
+            return
+
         self.logger.debug(f"Creating file={path} using mode={self.mode}")
         with open(path, "wb") as file:
             if self.mode == Mode.EMPTY:
