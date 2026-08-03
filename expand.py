@@ -106,6 +106,7 @@ class Writer:
         self.records = 0
 
     def create_file(self, path: str, size: int) -> None:
+        self.logger.debug(f"Creating file={path} using mode={self.mode}")
         with open(path, "wb") as file:
             if self.mode == Mode.EMPTY:
                 pass  # do nothing
@@ -152,19 +153,21 @@ class Writer:
         if kind == "d":
             try:
                 os.mkdir(path)
+                self.logger.debug(f"Created directory={path}")
             except FileExistsError:
                 pass
         elif kind == "l":
             try:
                 os.symlink(bytes(link), path)
+                self.logger.debug(f"Created symlink={path} to link={link}")
             except FileExistsError:
                 pass
         elif kind == "f":
             self.create_file(path, size)
+            self.logger.debug(f"Created file path={path}")
         else:
             self.skipped += 1
             raise UnknownKind(f"Unknown record kind for {record!r}")
-        self.logger.debug(f"Created kind={kind} path={path}")
         self.expanded += 1
 
     def report(self) -> Dict[str, int]:
@@ -182,6 +185,7 @@ def run(
     chunk_size: int,
     logger: Logger,
 ):
+    logger.info(f"Moving to expand directory={directory}")
     try:
         os.mkdir(directory)
     except FileExistsError:

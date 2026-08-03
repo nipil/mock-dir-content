@@ -69,6 +69,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 logger=logger,
                 log_missing=args.log_missing,
             )
+            logger.info(
+                f"Finished: captures={dir_captures} missing={dir_missing} directory={directory}"
+            )
             captures += dir_captures
             missing += dir_missing
     except KeyboardInterrupt:
@@ -79,6 +82,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     except AppError as exc:
         logger.critical(f"Critical: {exc}")
         sys.exit(3)
+
+    logger.info(f"Finished: captures={captures} missing={missing}")
 
 
 def run(
@@ -91,7 +96,7 @@ def run(
     missing = 0
 
     # move to base directory once, all sub path are relative to this path
-    logger.info(f"Processing directory={directory}")
+    logger.info(f"Move into capture directory={directory}")
     os.chdir(directory)
 
     directories = [directory]
@@ -99,6 +104,7 @@ def run(
         directory = directories.pop()
 
         # process the given item (read directory)
+        logger.debug(f"Processing capture sub-directory={directory}")
         for entry in os.scandir(directory):
 
             # iterative processing of a recursive filesystem
@@ -139,10 +145,6 @@ def run(
                 "%s\t%d\t%s\0%s\0" % record,
                 end="",
             )
-
-    logger.info(
-        f"Finished: captures={captures} missing={missing} directory={directory}"
-    )
 
     return (captures, missing)
 
